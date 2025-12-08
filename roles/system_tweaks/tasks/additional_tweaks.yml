@@ -1,0 +1,31 @@
+---
+# Additional System Tweaks
+#
+# This file is a template for adding custom system tweaks.
+# Copy this pattern to create new tweak configurations.
+
+- name: Example - Set timezone
+  ansible.builtin.timezone:
+    name: "{{ system_tweaks_timezone | default('UTC') }}"
+  when: system_tweaks_timezone is defined
+  tags:
+    - additional_tweaks
+    - timezone
+
+- name: Example - Configure hostname
+  ansible.builtin.hostname:
+    name: "{{ system_tweaks_hostname }}"
+  when: system_tweaks_hostname is defined
+  tags:
+    - additional_tweaks
+    - hostname
+
+# Add your custom tweaks below following this pattern:
+#
+# - name: Your custom tweak description
+#   ansible.builtin.module_name:
+#     parameter: "{{ variable_name }}"
+#   when: variable_name is defined
+#   tags:
+#     - additional_tweaks
+#     - your_tweak_name

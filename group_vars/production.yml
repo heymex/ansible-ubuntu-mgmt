@@ -1,0 +1,10 @@
+---
+# Production environment variables
+#
+# These variables apply to hosts in the [production] group
+#
+# Example overrides:
+# system_tweaks_passwordless_sudo_users:
+#   - ubuntu
+#   - admin
+#   - deploy

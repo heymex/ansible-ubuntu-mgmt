@@ -1,0 +1,24 @@
+---
+# System Tweaks Role - Main Tasks
+#
+# This role applies various system configuration tweaks.
+# To add new tweaks, create task files in tasks/ and include them here.
+
+- name: Include passwordless sudo configuration
+  ansible.builtin.include_tasks: passwordless_sudo.yml
+  tags:
+    - passwordless_sudo
+    - system_tweaks
+
+- name: Include SSH keys configuration
+  ansible.builtin.include_tasks: ssh_keys.yml
+  tags:
+    - ssh_keys
+    - system_tweaks
+
+- name: Include additional tweaks
+  ansible.builtin.include_tasks: additional_tweaks.yml
+  tags:
+    - additional_tweaks
+    - system_tweaks
+  when: system_tweaks_additional_enabled | default(false) | bool

@@ -1,0 +1,76 @@
+---
+# System Updates Playbook
+# 
+# This playbook handles system updates and can be scheduled via cron
+# 
+# Usage:
+#   ansible-playbook playbooks/system-updates.yml
+#   ansible-playbook playbooks/system-updates.yml --limit production
+#   ansible-playbook playbooks/system-updates.yml --limit staging
+#
+# For cron scheduling, see README.md
+
+- name: Update and upgrade Ubuntu systems
+  hosts: ubuntu_servers
+  become: true
+  gather_facts: true
+  
+  vars:
+    # Set to true to automatically reboot if required after updates
+    auto_reboot: false
+    # Set to true to only check for updates without installing
+    check_only: false
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Check for available updates
+      ansible.builtin.apt:
+        upgrade: dist
+        update_cache: yes
+        check_mode: yes
+      register: apt_upgrade_check
+      when: check_only | bool
+
+    - name: Display available updates (check mode)
+      ansible.builtin.debug:
+        msg: "Available updates: {{ apt_upgrade_check.changes | default([]) }}"
+      when: check_only | bool
+
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: yes
+        autoclean: yes
+      register: upgrade_result
+      when: not check_only | bool
+
+    - name: Display upgrade results
+      ansible.builtin.debug:
+        msg: "Upgraded packages: {{ upgrade_result.changes | default([]) }}"
+      when: not check_only | bool and upgrade_result.changed
+
+    - name: Check if reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Reboot system if required
+      ansible.builtin.reboot:
+        msg: "Rebooting after system updates"
+        reboot_timeout: 600
+      when: 
+        - reboot_required_file.stat.exists
+        - auto_reboot | bool
+        - not check_only | bool
+
+    - name: Display reboot requirement warning
+      ansible.builtin.debug:
+        msg: "WARNING: System requires a reboot. Set auto_reboot=true to reboot automatically."
+      when:
+        - reboot_required_file.stat.exists
+        - not auto_reboot | bool
+        - not check_only | bool

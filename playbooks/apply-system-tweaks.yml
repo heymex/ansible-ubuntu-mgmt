@@ -1,0 +1,20 @@
+---
+# Apply System Tweaks Playbook
+#
+# This playbook applies system configuration tweaks to Ubuntu systems
+# such as passwordless sudo, SSH keys, and other customizations.
+#
+# Usage:
+#   ansible-playbook playbooks/apply-system-tweaks.yml
+#   ansible-playbook playbooks/apply-system-tweaks.yml --limit production
+#
+# To add new tweaks, see roles/system_tweaks/README.md
+
+- name: Apply system tweaks to Ubuntu systems
+  hosts: ubuntu_servers
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: system_tweaks
+      tags: ['system_tweaks', 'always']

@@ -1,0 +1,20 @@
+---
+# Global variables for all hosts
+#
+# These variables apply to all hosts unless overridden in group_vars
+# or host_vars
+
+# System tweaks configuration
+system_tweaks_passwordless_sudo_users:
+  - ubuntu
+
+# SSH keys - add your public keys here
+# system_tweaks_ssh_keys:
+#   - user: ubuntu
+#     key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC..."
+#     comment: "Admin SSH Key"
+
+# Example: Production-specific settings
+# Uncomment and customize as needed
+# system_tweaks_timezone: "America/New_York"
+# system_tweaks_additional_enabled: true

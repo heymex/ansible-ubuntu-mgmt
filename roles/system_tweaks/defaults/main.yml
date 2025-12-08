@@ -1,0 +1,28 @@
+---
+# System Tweaks Role - Default Variables
+#
+# Override these variables in group_vars or host_vars as needed
+
+# Passwordless sudo configuration
+system_tweaks_passwordless_sudo_enabled: true
+system_tweaks_passwordless_sudo_users:
+  - ubuntu
+  # Add more users as needed:
+  # - admin
+  # - deploy
+
+# SSH keys configuration
+system_tweaks_ssh_keys_enabled: true
+system_tweaks_ssh_keys: []
+  # Example format:
+  # - user: ubuntu
+  #   key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC..."
+  #   comment: "Admin SSH Key"
+  # - user: deploy
+  #   key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+  #   comment: "Deploy Key"
+
+# Additional tweaks
+system_tweaks_additional_enabled: false
+# system_tweaks_timezone: "America/New_York"
+# system_tweaks_hostname: "server1"

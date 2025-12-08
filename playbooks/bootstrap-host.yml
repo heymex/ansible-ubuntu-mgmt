@@ -1,0 +1,175 @@
+---
+# Bootstrap Host Playbook
+#
+# This playbook performs one-time onboarding of new hosts to prepare them
+# for Ansible management. It handles initial setup regardless of current
+# authentication method.
+#
+# Usage:
+#   # With password authentication (interactive)
+#   ansible-playbook playbooks/bootstrap-host.yml -i inventory/bootstrap-hosts.ini --ask-pass --ask-become-pass
+#
+#   # With SSH key authentication
+#   ansible-playbook playbooks/bootstrap-host.yml -i inventory/bootstrap-hosts.ini
+#
+#   # With specific user and password in inventory
+#   ansible-playbook playbooks/bootstrap-host.yml -i inventory/bootstrap-hosts.ini
+#
+# After bootstrap, the host can be added to the main inventory and managed normally.
+
+- name: Bootstrap Ubuntu host for Ansible management
+  hosts: bootstrap_hosts
+  gather_facts: false  # Don't gather facts initially, we'll install Python first
+  
+  vars:
+    # Target user for Ansible management (will be created if doesn't exist)
+    ansible_management_user: "{{ bootstrap_ansible_user | default('ansible') }}"
+    
+    # SSH public key to install for the management user
+    ansible_management_ssh_key: "{{ bootstrap_ssh_public_key | default(lookup('file', '~/.ssh/id_rsa.pub')) }}"
+    
+    # Users to grant passwordless sudo
+    bootstrap_sudo_users:
+      - "{{ ansible_management_user }}"
+      - "{{ ansible_user | default('ubuntu') }}"
+    
+    # Whether to disable password authentication for SSH (security best practice)
+    disable_password_auth: "{{ bootstrap_disable_password_auth | default(false) }}"
+
+  tasks:
+    - name: Check if Python 3 is available
+      ansible.builtin.command: which python3
+      register: python3_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Check if Python 3 is available (alternative path)
+      ansible.builtin.command: which python
+      register: python_check
+      ignore_errors: true
+      changed_when: false
+      when: python3_check.rc != 0
+
+    - name: Install Python 3 if not available
+      ansible.builtin.raw: |
+        if command -v apt-get > /dev/null 2>&1; then
+          apt-get update && apt-get install -y python3 python3-apt
+        elif command -v yum > /dev/null 2>&1; then
+          yum install -y python3
+        fi
+      register: python_install
+      changed_when: python_install.rc == 0
+      when: python3_check.rc != 0 and python_check.rc != 0
+
+    - name: Set fact for Python interpreter
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "{{ 'python3' if python3_check.rc == 0 else 'python' }}"
+
+    - name: Re-gather facts with Python
+      ansible.builtin.setup:
+      when: python3_check.rc == 0 or python_check.rc == 0
+
+    - name: Ensure management user exists
+      ansible.builtin.user:
+        name: "{{ ansible_management_user }}"
+        state: present
+        shell: /bin/bash
+        create_home: true
+        groups: sudo
+        append: true
+      when: ansible_management_user != ansible_user
+
+    - name: Create .ssh directory for management user
+      ansible.builtin.file:
+        path: "/home/{{ ansible_management_user }}/.ssh"
+        state: directory
+        mode: '0700'
+        owner: "{{ ansible_management_user }}"
+        group: "{{ ansible_management_user }}"
+      when: ansible_management_user != ansible_user
+
+    - name: Create .ssh directory for current user
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.ssh"
+        state: directory
+        mode: '0700'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: ansible_management_user == ansible_user
+
+    - name: Install SSH public key for management user
+      ansible.posix.authorized_key:
+        user: "{{ ansible_management_user }}"
+        state: present
+        key: "{{ ansible_management_ssh_key }}"
+        comment: "Ansible management key"
+        exclusive: false
+
+    - name: Ensure sudoers.d directory exists
+      ansible.builtin.file:
+        path: /etc/sudoers.d
+        state: directory
+        mode: '0750'
+        owner: root
+        group: root
+
+    - name: Configure passwordless sudo for management users
+      ansible.builtin.lineinfile:
+        path: "/etc/sudoers.d/ansible-bootstrap"
+        regexp: "^{{ item }}\\s"
+        line: "{{ item }} ALL=(ALL) NOPASSWD: ALL"
+        validate: 'visudo -cf %s'
+        mode: '0440'
+        owner: root
+        group: root
+        create: true
+      loop: "{{ bootstrap_sudo_users }}"
+
+    - name: Install common packages for Ansible
+      ansible.builtin.apt:
+        name:
+          - python3-apt
+          - python3-pip
+          - openssh-server
+          - sudo
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Ensure SSH service is running
+      ansible.builtin.systemd:
+        name: ssh
+        state: started
+        enabled: true
+
+    - name: Configure SSH to allow key authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^{{ item.regexp }}"
+        line: "{{ item.line }}"
+        backup: true
+      loop:
+        - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication {{ "no" if disable_password_auth else "yes" }}' }
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+      notify: restart ssh
+
+    - name: Display bootstrap summary
+      ansible.builtin.debug:
+        msg:
+          - "Bootstrap complete for {{ inventory_hostname }}"
+          - "Management user: {{ ansible_management_user }}"
+          - "SSH key installed: {{ ansible_management_ssh_key[:50] }}..."
+          - "Passwordless sudo configured for: {{ bootstrap_sudo_users | join(', ') }}"
+          - ""
+          - "Next steps:"
+          - "1. Add this host to inventory/hosts with:"
+          - "   {{ inventory_hostname }} ansible_host={{ ansible_host | default(inventory_hostname) }} ansible_user={{ ansible_management_user }}"
+          - "2. Test connection: ansible {{ inventory_hostname }} -m ping"
+          - "3. Run apply-system-tweaks: ansible-playbook playbooks/apply-system-tweaks.yml --limit {{ inventory_hostname }}"
+
+  handlers:
+    - name: restart ssh
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
