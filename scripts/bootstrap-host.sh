@@ -238,30 +238,31 @@ if [ -f "$PRIVATE_KEY_FILE" ]; then
 fi
 
 if [ "$KEY_ALREADY_INSTALLED" = false ]; then
-    # Build ssh-copy-id command
-    SSH_COPY_ID_CMD="ssh-copy-id"
-    if [ -n "$SSH_KEY" ]; then
-        SSH_COPY_ID_CMD="$SSH_COPY_ID_CMD -i $SSH_KEY"
-    elif [ -f "$PRIVATE_KEY_FILE" ]; then
-        SSH_COPY_ID_CMD="$SSH_COPY_ID_CMD -i $PRIVATE_KEY_FILE"
+    # Install the key using the initial user with sudo (not ssh-copy-id)
+    # ssh-copy-id would try to connect as the management user, which doesn't have the key yet
+    echo "  Installing SSH key via $INITIAL_USER (using sudo)..."
+    if [ "$SUDO_NEEDS_PASSWORD" = true ]; then
+        echo "  (You will be prompted for the sudo password for $INITIAL_USER)"
     fi
-
-    # Use ssh-copy-id to install the key
-    echo "  Installing SSH key..."
-    if $SSH_COPY_ID_CMD -f "$MANAGEMENT_USER@$TARGET_HOST" 2>&1 | grep -v "WARNING:"; then
-        echo -e "  ${GREEN}✓ SSH key installed${NC}"
-    else
-        # If ssh-copy-id fails, try manual method
-        echo "  ssh-copy-id failed, trying manual method..."
-        if [ "$SUDO_NEEDS_PASSWORD" = true ]; then
-            echo "  (You will be prompted for the sudo password)"
-        fi
-        $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo mkdir -p /home/$MANAGEMENT_USER/.ssh && sudo chmod 700 /home/$MANAGEMENT_USER/.ssh && echo '${SSH_KEY_CONTENT}' | sudo tee -a /home/$MANAGEMENT_USER/.ssh/authorized_keys > /dev/null && sudo chmod 600 /home/$MANAGEMENT_USER/.ssh/authorized_keys && sudo chown -R $MANAGEMENT_USER:$MANAGEMENT_USER /home/$MANAGEMENT_USER/.ssh" || {
-            echo -e "  ${RED}Failed to install SSH key${NC}"
-            exit 1
-        }
-        echo -e "  ${GREEN}✓ SSH key installed${NC}"
-    fi
+    
+    # Ensure .ssh directory exists and has correct permissions
+    $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo mkdir -p /home/$MANAGEMENT_USER/.ssh && sudo chmod 700 /home/$MANAGEMENT_USER/.ssh && sudo chown $MANAGEMENT_USER:$MANAGEMENT_USER /home/$MANAGEMENT_USER/.ssh" || {
+        echo -e "  ${RED}Failed to create .ssh directory${NC}"
+        exit 1
+    }
+    
+    # Add the key to authorized_keys (avoid duplicates)
+    $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "echo '${SSH_KEY_CONTENT}' | sudo tee -a /home/$MANAGEMENT_USER/.ssh/authorized_keys > /dev/null && sudo chmod 600 /home/$MANAGEMENT_USER/.ssh/authorized_keys && sudo chown $MANAGEMENT_USER:$MANAGEMENT_USER /home/$MANAGEMENT_USER/.ssh/authorized_keys" || {
+        echo -e "  ${RED}Failed to install SSH key${NC}"
+        exit 1
+    }
+    
+    # Remove duplicate keys if any
+    $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo -u $MANAGEMENT_USER sort -u /home/$MANAGEMENT_USER/.ssh/authorized_keys | sudo tee /home/$MANAGEMENT_USER/.ssh/authorized_keys > /dev/null && sudo chmod 600 /home/$MANAGEMENT_USER/.ssh/authorized_keys && sudo chown $MANAGEMENT_USER:$MANAGEMENT_USER /home/$MANAGEMENT_USER/.ssh/authorized_keys" || {
+        echo -e "  ${YELLOW}Warning: Failed to deduplicate keys, but key should be installed${NC}"
+    }
+    
+    echo -e "  ${GREEN}✓ SSH key installed${NC}"
 else
     echo -e "  ${GREEN}✓ SSH key already installed, skipping${NC}"
 fi
