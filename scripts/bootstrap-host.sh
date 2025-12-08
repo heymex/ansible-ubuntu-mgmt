@@ -152,6 +152,7 @@ echo ""
 
 # Build SSH command for initial connection
 SSH_CMD="ssh"
+SSH_NEEDS_PASSWORD=false
 if [ -n "$SSH_KEY" ]; then
     SSH_CMD="$SSH_CMD -i $SSH_KEY"
     echo -e "${GREEN}Using SSH key for initial connection: $SSH_KEY${NC}"
@@ -160,12 +161,19 @@ elif ssh -o BatchMode=yes -o ConnectTimeout=5 "$INITIAL_USER@$TARGET_HOST" exit 
 else
     echo -e "${YELLOW}Password authentication will be required for initial connection${NC}"
     echo "You will be prompted for the password for $INITIAL_USER@$TARGET_HOST"
+    SSH_NEEDS_PASSWORD=true
+    # Use -t flag to allocate pseudo-terminal for password prompts
+    SSH_CMD="$SSH_CMD -t"
 fi
 
-# Test initial connection
+# Test initial connection (without -t for this test to avoid password prompt)
 echo ""
 echo "Testing initial connection..."
-if $SSH_CMD -o ConnectTimeout=10 "$INITIAL_USER@$TARGET_HOST" exit 2>/dev/null; then
+TEST_SSH_CMD="ssh"
+if [ -n "$SSH_KEY" ]; then
+    TEST_SSH_CMD="$TEST_SSH_CMD -i $SSH_KEY"
+fi
+if $TEST_SSH_CMD -o ConnectTimeout=10 "$INITIAL_USER@$TARGET_HOST" exit 2>/dev/null; then
     echo -e "${GREEN}✓ Initial connection successful${NC}"
 else
     echo -e "${RED}✗ Initial connection failed${NC}"
@@ -252,13 +260,24 @@ echo "This will:"
 echo "  1. Create user: $MANAGEMENT_USER"
 echo "  2. Install SSH public key"
 echo "  3. Configure passwordless sudo"
+if [ "$SSH_NEEDS_PASSWORD" = true ]; then
+    echo ""
+    echo "You will be prompted for the sudo password for $INITIAL_USER"
+fi
 
+# Use -t flag to allocate pseudo-terminal for sudo password prompts
+# This allows sudo to prompt for password interactively
 if $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo bash -s" <<< "$BOOTSTRAP_SCRIPT" "$MANAGEMENT_USER" "$SSH_KEY_CONTENT" "$INITIAL_USER"; then
     echo ""
     echo -e "${GREEN}✓ Bootstrap completed successfully!${NC}"
 else
     echo ""
     echo -e "${RED}✗ Bootstrap failed${NC}"
+    echo ""
+    echo "Common issues:"
+    echo "  - Incorrect sudo password"
+    echo "  - User $INITIAL_USER doesn't have sudo access"
+    echo "  - Network connectivity issues"
     exit 1
 fi
 
