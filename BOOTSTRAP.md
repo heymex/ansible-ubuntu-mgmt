@@ -1,6 +1,6 @@
 # Host Bootstrap Quick Reference
 
-Quick reference guide for bootstrapping new hosts.
+Quick reference guide for bootstrapping new hosts using raw SSH commands (no Ansible required).
 
 ## Quick Start
 
@@ -24,13 +24,7 @@ Quick reference guide for bootstrapping new hosts.
 ./scripts/bootstrap-host.sh server1.example.com --user ubuntu
 ```
 
-Or manually:
-```bash
-ansible-playbook playbooks/bootstrap-host.yml \
-  -i inventory/bootstrap-hosts.ini \
-  --ask-pass \
-  --ask-become-pass
-```
+The script will prompt for the password when needed.
 
 ### Scenario 2: Host with SSH Key Already Configured
 
@@ -47,24 +41,12 @@ ansible-playbook playbooks/bootstrap-host.yml \
   --user admin
 ```
 
-Or in inventory:
-```ini
-[bootstrap_hosts]
-server1.example.com ansible_user=admin ansible_ssh_private_key_file=~/.ssh/custom_key
-```
-
 ### Scenario 4: Multiple Hosts
 
 ```bash
-# Bootstrap one at a time (recommended for first-time setup)
+# Bootstrap one at a time (recommended)
 ./scripts/bootstrap-host.sh server1.example.com
 ./scripts/bootstrap-host.sh server2.example.com
-
-# Or bootstrap multiple at once (if they share same credentials)
-ansible-playbook playbooks/bootstrap-host.yml \
-  -i inventory/bootstrap-hosts.ini \
-  --ask-pass \
-  --ask-become-pass
 ```
 
 ## After Bootstrap

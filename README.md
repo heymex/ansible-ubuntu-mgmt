@@ -107,13 +107,13 @@ When adding a new host that hasn't been configured for Ansible yet, you need to 
 
 ### What Bootstrap Does
 
-The bootstrap process:
-1. Installs Python 3 (required for Ansible)
-2. Creates a dedicated Ansible management user (default: `ansible`)
-3. Installs your SSH public key for key-based authentication
-4. Configures passwordless sudo for the management user
-5. Ensures SSH service is properly configured
-6. Installs common packages needed for Ansible
+The bootstrap process uses raw SSH commands (no Ansible required) to:
+1. Create a dedicated Ansible management user (default: `ansible`)
+2. Install your SSH public key for key-based authentication
+3. Configure passwordless sudo for the management user
+4. Test the connection to ensure it works
+
+Once bootstrap completes and the connection test succeeds, the host is ready to be added to the inventory and managed with Ansible.
 
 > **Quick Reference**: See [BOOTSTRAP.md](BOOTSTRAP.md) for a quick reference guide with common scenarios and troubleshooting.
 
@@ -128,8 +128,8 @@ The easiest way to bootstrap a new host:
 # Bootstrap with specific user
 ./scripts/bootstrap-host.sh server1.example.com --user admin
 
-# Bootstrap using IP address
-./scripts/bootstrap-host.sh 192.168.1.100 --ip
+# Bootstrap using IP address (auto-detected, or use --ip)
+./scripts/bootstrap-host.sh 192.168.1.100
 
 # Bootstrap with custom SSH key for initial connection
 ./scripts/bootstrap-host.sh server1.example.com --ssh-key ~/.ssh/custom_key
@@ -139,91 +139,83 @@ The easiest way to bootstrap a new host:
 ```
 
 The script will:
-- Detect available authentication methods
-- Prompt for password if needed
-- Run the bootstrap playbook
-- Provide next steps after completion
+- Test initial SSH connection
+- Use raw SSH commands to create the management user
+- Install your SSH public key
+- Configure passwordless sudo
+- Test the connection as the management user
+- Offer to add the host to the inventory automatically
 
 ### Method 2: Manual Bootstrap
 
-1. **Create bootstrap inventory** (copy from example):
+If you prefer to bootstrap manually using SSH:
+
+1. **SSH to the host** with an existing user that has sudo access:
    ```bash
-   cp inventory/bootstrap-hosts.ini.example inventory/bootstrap-hosts.ini
+   ssh user@new-server.example.com
    ```
 
-2. **Add the host to bootstrap inventory** (`inventory/bootstrap-hosts.ini`):
-   ```ini
-   [bootstrap_hosts]
-   new-server.example.com ansible_host=192.168.1.100 ansible_user=ubuntu
+2. **Create the ansible user**:
+   ```bash
+   sudo useradd -m -s /bin/bash ansible
+   sudo usermod -aG sudo ansible
    ```
 
-3. **Run the bootstrap playbook**:
-   
-   **With password authentication** (will prompt):
+3. **Install your SSH public key**:
    ```bash
-   ansible-playbook playbooks/bootstrap-host.yml \
-     -i inventory/bootstrap-hosts.ini \
-     --ask-pass \
-     --ask-become-pass
-   ```
-   
-   **With SSH key authentication**:
-   ```bash
-   ansible-playbook playbooks/bootstrap-host.yml \
-     -i inventory/bootstrap-hosts.ini
+   sudo mkdir -p /home/ansible/.ssh
+   sudo chmod 700 /home/ansible/.ssh
+   echo "YOUR_PUBLIC_KEY_HERE" | sudo tee /home/ansible/.ssh/authorized_keys
+   sudo chmod 600 /home/ansible/.ssh/authorized_keys
+   sudo chown -R ansible:ansible /home/ansible/.ssh
    ```
 
-4. **After bootstrap completes**, add the host to the main inventory (`inventory/hosts`):
-   ```ini
-   [ubuntu_servers]
-   new-server.example.com ansible_host=192.168.1.100 ansible_user=ansible
-   ```
-   
-   **Important**: If your SSH private key is not in the default location (`~/.ssh/id_ed25519`), specify it:
-   ```ini
-   [ubuntu_servers]
-   new-server.example.com ansible_host=192.168.1.100 ansible_user=ansible ansible_ssh_private_key_file=~/.ssh/id_ed25519
+4. **Configure passwordless sudo**:
+   ```bash
+   echo "ansible ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/ansible
+   sudo chmod 440 /etc/sudoers.d/ansible
+   sudo visudo -cf /etc/sudoers.d/ansible
    ```
 
 5. **Test the connection**:
    ```bash
+   ssh ansible@new-server.example.com
+   ```
+
+6. **Add to inventory** (`inventory/hosts`):
+   ```ini
+   [ubuntu_servers]
+   new-server.example.com ansible_host=192.168.1.100 ansible_user=ansible
+   ```
+
+7. **Test with Ansible**:
+   ```bash
    ansible new-server.example.com -m ping
    ```
-   
-   If authentication fails:
-   - Verify the private key matches the public key that was installed during bootstrap
-   - Test SSH manually: `ssh -i ~/.ssh/id_ed25519 ansible@new-server.example.com`
-   - Ensure the key is in your SSH agent or specify `ansible_ssh_private_key_file` in inventory
 
 ### Bootstrap Options
 
-You can customize the bootstrap process with variables:
+The bootstrap script supports various options:
 
 ```bash
 # Use a different management user
-ansible-playbook playbooks/bootstrap-host.yml \
-  -i inventory/bootstrap-hosts.ini \
-  -e bootstrap_ansible_user=deploy
+./scripts/bootstrap-host.sh server1.example.com --mgmt-user deploy
 
 # Use a specific SSH public key
-ansible-playbook playbooks/bootstrap-host.yml \
-  -i inventory/bootstrap-hosts.ini \
-  -e bootstrap_ssh_public_key="$(cat ~/.ssh/custom_key.pub)"
+./scripts/bootstrap-host.sh server1.example.com --pub-key ~/.ssh/custom_key.pub
 
-# Disable password authentication after bootstrap (security best practice)
-ansible-playbook playbooks/bootstrap-host.yml \
-  -i inventory/bootstrap-hosts.ini \
-  -e bootstrap_disable_password_auth=true
+# Use a custom SSH key for initial connection
+./scripts/bootstrap-host.sh server1.example.com --ssh-key ~/.ssh/initial_key
 ```
 
 ### Handling Mixed Authentication
 
-The bootstrap process handles different initial authentication scenarios:
+The bootstrap script handles different initial authentication scenarios:
 
-- **Password-only hosts**: Use `--ask-pass --ask-become-pass` flags
+- **Password-only hosts**: Will prompt for password when needed
 - **SSH key hosts**: Works automatically if your SSH key is already configured
-- **Custom SSH keys**: Specify with `ansible_ssh_private_key_file` in inventory
-- **Different users**: Specify `ansible_user` in the bootstrap inventory
+- **Custom SSH keys**: Specify with `--ssh-key` flag for initial connection
+- **Different users**: Specify with `--user` flag
 
 After bootstrap, all hosts will use consistent key-based authentication with the management user.
 
