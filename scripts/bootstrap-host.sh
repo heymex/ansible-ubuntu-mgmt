@@ -206,7 +206,7 @@ else
     echo -e "  ${GREEN}✓ User created${NC}"
 fi
 
-# Step 2: Install SSH key using ssh-copy-id
+# Step 2: Install SSH key (check if already installed first)
 echo ""
 echo "Step 2: Installing SSH public key..."
 PRIVATE_KEY_FILE="${SSH_PUBLIC_KEY%.pub}"
@@ -218,28 +218,52 @@ if [ ! -f "$PRIVATE_KEY_FILE" ]; then
     fi
 fi
 
-# Build ssh-copy-id command
-SSH_COPY_ID_CMD="ssh-copy-id"
-if [ -n "$SSH_KEY" ]; then
-    SSH_COPY_ID_CMD="$SSH_COPY_ID_CMD -i $SSH_KEY"
-elif [ -f "$PRIVATE_KEY_FILE" ]; then
-    SSH_COPY_ID_CMD="$SSH_COPY_ID_CMD -i $PRIVATE_KEY_FILE"
+# Read the public key content for comparison
+SSH_KEY_CONTENT="$(cat "$SSH_PUBLIC_KEY" | tr -d '\n')"
+
+# Check if key is already installed
+KEY_ALREADY_INSTALLED=false
+if [ -f "$PRIVATE_KEY_FILE" ]; then
+    # Test if we can connect as the management user (key is already installed)
+    if ssh -i "$PRIVATE_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=5 "$MANAGEMENT_USER@$TARGET_HOST" exit 2>/dev/null; then
+        echo "  SSH key already installed and working"
+        KEY_ALREADY_INSTALLED=true
+    else
+        # Check if key exists in authorized_keys even if connection fails
+        if $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo grep -qF '${SSH_KEY_CONTENT}' /home/$MANAGEMENT_USER/.ssh/authorized_keys 2>/dev/null"; then
+            echo "  SSH key found in authorized_keys"
+            KEY_ALREADY_INSTALLED=true
+        fi
+    fi
 fi
 
-# Use ssh-copy-id to install the key
-if $SSH_COPY_ID_CMD -f "$MANAGEMENT_USER@$TARGET_HOST" 2>&1 | grep -v "WARNING:"; then
-    echo -e "  ${GREEN}✓ SSH key installed${NC}"
-else
-    # If ssh-copy-id fails, try manual method
-    echo "  ssh-copy-id failed, trying manual method..."
-    if [ "$SUDO_NEEDS_PASSWORD" = true ]; then
-        echo "  (You will be prompted for the sudo password)"
+if [ "$KEY_ALREADY_INSTALLED" = false ]; then
+    # Build ssh-copy-id command
+    SSH_COPY_ID_CMD="ssh-copy-id"
+    if [ -n "$SSH_KEY" ]; then
+        SSH_COPY_ID_CMD="$SSH_COPY_ID_CMD -i $SSH_KEY"
+    elif [ -f "$PRIVATE_KEY_FILE" ]; then
+        SSH_COPY_ID_CMD="$SSH_COPY_ID_CMD -i $PRIVATE_KEY_FILE"
     fi
-    $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo mkdir -p /home/$MANAGEMENT_USER/.ssh && sudo chmod 700 /home/$MANAGEMENT_USER/.ssh && echo '$(cat "$SSH_PUBLIC_KEY")' | sudo tee -a /home/$MANAGEMENT_USER/.ssh/authorized_keys > /dev/null && sudo chmod 600 /home/$MANAGEMENT_USER/.ssh/authorized_keys && sudo chown -R $MANAGEMENT_USER:$MANAGEMENT_USER /home/$MANAGEMENT_USER/.ssh" || {
-        echo -e "  ${RED}Failed to install SSH key${NC}"
-        exit 1
-    }
-    echo -e "  ${GREEN}✓ SSH key installed${NC}"
+
+    # Use ssh-copy-id to install the key
+    echo "  Installing SSH key..."
+    if $SSH_COPY_ID_CMD -f "$MANAGEMENT_USER@$TARGET_HOST" 2>&1 | grep -v "WARNING:"; then
+        echo -e "  ${GREEN}✓ SSH key installed${NC}"
+    else
+        # If ssh-copy-id fails, try manual method
+        echo "  ssh-copy-id failed, trying manual method..."
+        if [ "$SUDO_NEEDS_PASSWORD" = true ]; then
+            echo "  (You will be prompted for the sudo password)"
+        fi
+        $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo mkdir -p /home/$MANAGEMENT_USER/.ssh && sudo chmod 700 /home/$MANAGEMENT_USER/.ssh && echo '${SSH_KEY_CONTENT}' | sudo tee -a /home/$MANAGEMENT_USER/.ssh/authorized_keys > /dev/null && sudo chmod 600 /home/$MANAGEMENT_USER/.ssh/authorized_keys && sudo chown -R $MANAGEMENT_USER:$MANAGEMENT_USER /home/$MANAGEMENT_USER/.ssh" || {
+            echo -e "  ${RED}Failed to install SSH key${NC}"
+            exit 1
+        }
+        echo -e "  ${GREEN}✓ SSH key installed${NC}"
+    fi
+else
+    echo -e "  ${GREEN}✓ SSH key already installed, skipping${NC}"
 fi
 
 # Step 3: Configure passwordless sudo
