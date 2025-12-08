@@ -176,6 +176,19 @@ else
     exit 1
 fi
 
+# Check if initial user has passwordless sudo
+echo ""
+echo "Checking sudo access..."
+if $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo -n true" 2>/dev/null; then
+    echo "  Passwordless sudo is configured for $INITIAL_USER"
+    SUDO_NEEDS_PASSWORD=false
+else
+    echo "  Sudo will require a password for $INITIAL_USER"
+    SUDO_NEEDS_PASSWORD=true
+    # Use -t flag to allocate pseudo-terminal for sudo password prompts
+    SSH_CMD="$SSH_CMD -t"
+fi
+
 # Step 1: Create the management user
 echo ""
 echo "Step 1: Creating user '$MANAGEMENT_USER'..."
@@ -183,8 +196,11 @@ if $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "id $MANAGEMENT_USER" &>/dev/null; then
     echo "  User $MANAGEMENT_USER already exists"
 else
     echo "  Creating user..."
+    if [ "$SUDO_NEEDS_PASSWORD" = true ]; then
+        echo "  (You will be prompted for the sudo password)"
+    fi
     $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo useradd -m -s /bin/bash $MANAGEMENT_USER && sudo usermod -aG sudo $MANAGEMENT_USER" || {
-        echo -e "${RED}Failed to create user${NC}"
+        echo -e "  ${RED}Failed to create user${NC}"
         exit 1
     }
     echo -e "  ${GREEN}✓ User created${NC}"
@@ -216,6 +232,9 @@ if $SSH_COPY_ID_CMD -f "$MANAGEMENT_USER@$TARGET_HOST" 2>&1 | grep -v "WARNING:"
 else
     # If ssh-copy-id fails, try manual method
     echo "  ssh-copy-id failed, trying manual method..."
+    if [ "$SUDO_NEEDS_PASSWORD" = true ]; then
+        echo "  (You will be prompted for the sudo password)"
+    fi
     $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo mkdir -p /home/$MANAGEMENT_USER/.ssh && sudo chmod 700 /home/$MANAGEMENT_USER/.ssh && echo '$(cat "$SSH_PUBLIC_KEY")' | sudo tee -a /home/$MANAGEMENT_USER/.ssh/authorized_keys > /dev/null && sudo chmod 600 /home/$MANAGEMENT_USER/.ssh/authorized_keys && sudo chown -R $MANAGEMENT_USER:$MANAGEMENT_USER /home/$MANAGEMENT_USER/.ssh" || {
         echo -e "  ${RED}Failed to install SSH key${NC}"
         exit 1
@@ -226,6 +245,9 @@ fi
 # Step 3: Configure passwordless sudo
 echo ""
 echo "Step 3: Configuring passwordless sudo..."
+if [ "$SUDO_NEEDS_PASSWORD" = true ]; then
+    echo "  (You will be prompted for the sudo password)"
+fi
 $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "echo '$MANAGEMENT_USER ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/ansible-$MANAGEMENT_USER > /dev/null && sudo chmod 440 /etc/sudoers.d/ansible-$MANAGEMENT_USER && sudo visudo -cf /etc/sudoers.d/ansible-$MANAGEMENT_USER" || {
     echo -e "  ${RED}Failed to configure sudo${NC}"
     exit 1
