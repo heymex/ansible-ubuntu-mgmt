@@ -162,8 +162,6 @@ else
     echo -e "${YELLOW}Password authentication will be required for initial connection${NC}"
     echo "You will be prompted for the password for $INITIAL_USER@$TARGET_HOST"
     SSH_NEEDS_PASSWORD=true
-    # Use -t flag to allocate pseudo-terminal for password prompts
-    SSH_CMD="$SSH_CMD -t"
 fi
 
 # Test initial connection (without -t for this test to avoid password prompt)
@@ -182,13 +180,15 @@ else
 fi
 
 # Bootstrap script to run on remote host
+# Uses environment variables instead of arguments for better compatibility
 BOOTSTRAP_SCRIPT=$(cat << 'BOOTSTRAP_EOF'
 #!/bin/bash
 set -euo pipefail
 
-MANAGEMENT_USER="$1"
-SSH_KEY_CONTENT="$2"
-INITIAL_USER="$3"
+# Get values from environment variables (set by wrapper)
+MANAGEMENT_USER="${MANAGEMENT_USER:-ansible}"
+SSH_KEY_CONTENT="${SSH_KEY_CONTENT:-}"
+INITIAL_USER="${INITIAL_USER:-ubuntu}"
 
 # Create management user if it doesn't exist
 if ! id "$MANAGEMENT_USER" &>/dev/null; then
@@ -265,9 +265,43 @@ if [ "$SSH_NEEDS_PASSWORD" = true ]; then
     echo "You will be prompted for the sudo password for $INITIAL_USER"
 fi
 
-# Use -t flag to allocate pseudo-terminal for sudo password prompts
-# This allows sudo to prompt for password interactively
-if $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo bash -s" <<< "$BOOTSTRAP_SCRIPT" "$MANAGEMENT_USER" "$SSH_KEY_CONTENT" "$INITIAL_USER"; then
+# Build the full bootstrap command with arguments embedded
+# We need to pass arguments as environment variables or embed them in the script
+# Using environment variables is safer for special characters
+BOOTSTRAP_WITH_ARGS=$(cat <<BOOTSTRAP_WRAPPER
+#!/bin/bash
+export MANAGEMENT_USER="$MANAGEMENT_USER"
+export SSH_KEY_CONTENT="$SSH_KEY_CONTENT"
+export INITIAL_USER="$INITIAL_USER"
+$BOOTSTRAP_SCRIPT
+BOOTSTRAP_WRAPPER
+)
+
+# Execute with proper pseudo-terminal handling
+if [ "$SSH_NEEDS_PASSWORD" = true ]; then
+    # Use -tt to force pseudo-terminal allocation (needed for sudo password prompts)
+    # Use here-doc instead of here-string to allow pseudo-terminal
+    if $SSH_CMD -tt "$INITIAL_USER@$TARGET_HOST" "sudo bash" <<BOOTSTRAP_EOF
+$BOOTSTRAP_WITH_ARGS
+BOOTSTRAP_EOF
+    then
+        BOOTSTRAP_SUCCESS=true
+    else
+        BOOTSTRAP_SUCCESS=false
+    fi
+else
+    # For key auth, regular here-string works fine
+    if $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo bash" <<BOOTSTRAP_EOF
+$BOOTSTRAP_WITH_ARGS
+BOOTSTRAP_EOF
+    then
+        BOOTSTRAP_SUCCESS=true
+    else
+        BOOTSTRAP_SUCCESS=false
+    fi
+fi
+
+if [ "$BOOTSTRAP_SUCCESS" = true ]; then
     echo ""
     echo -e "${GREEN}✓ Bootstrap completed successfully!${NC}"
 else
