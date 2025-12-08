@@ -178,11 +178,22 @@ The script will:
    [ubuntu_servers]
    new-server.example.com ansible_host=192.168.1.100 ansible_user=ansible
    ```
+   
+   **Important**: If your SSH private key is not in the default location (`~/.ssh/id_ed25519`), specify it:
+   ```ini
+   [ubuntu_servers]
+   new-server.example.com ansible_host=192.168.1.100 ansible_user=ansible ansible_ssh_private_key_file=~/.ssh/id_ed25519
+   ```
 
 5. **Test the connection**:
    ```bash
    ansible new-server.example.com -m ping
    ```
+   
+   If authentication fails:
+   - Verify the private key matches the public key that was installed during bootstrap
+   - Test SSH manually: `ssh -i ~/.ssh/id_ed25519 ansible@new-server.example.com`
+   - Ensure the key is in your SSH agent or specify `ansible_ssh_private_key_file` in inventory
 
 ### Bootstrap Options
 

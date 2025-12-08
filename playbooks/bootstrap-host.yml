@@ -26,7 +26,7 @@
     ansible_management_user: "{{ bootstrap_ansible_user | default('ansible') }}"
     
     # SSH public key to install for the management user (ED25519 recommended)
-    ansible_management_ssh_key: "{{ bootstrap_ssh_public_key | default(lookup('file', '~/.ssh/id_ed25519.pub')) }}"
+    ansible_management_ssh_key: "{{ bootstrap_ssh_public_key | default(lookup('file', '~/.ssh/id_ed25519.pub', errors='ignore') | default('')) }}"
     
     # Users to grant passwordless sudo
     bootstrap_sudo_users:
@@ -59,15 +59,15 @@
         fi
       register: python_install
       changed_when: python_install.rc == 0
-      when: python3_check.rc != 0 and python_check.rc != 0
+      when: python3_check.rc != 0 and (python_check is not defined or python_check.rc != 0)
 
     - name: Set fact for Python interpreter
       ansible.builtin.set_fact:
-        ansible_python_interpreter: "{{ 'python3' if python3_check.rc == 0 else 'python' }}"
+        ansible_python_interpreter: "{{ 'python3' if python3_check.rc == 0 else ('python' if python_check.rc == 0 else 'python3') }}"
 
     - name: Re-gather facts with Python
       ansible.builtin.setup:
-      when: python3_check.rc == 0 or python_check.rc == 0
+      when: python3_check.rc == 0 or (python_check is defined and python_check.rc == 0)
 
     - name: Ensure management user exists
       ansible.builtin.user:
@@ -97,6 +97,14 @@
         group: "{{ ansible_user }}"
       when: ansible_management_user == ansible_user
 
+    - name: Validate SSH public key is provided
+      ansible.builtin.assert:
+        that:
+          - ansible_management_ssh_key | length > 0
+          - ansible_management_ssh_key is match("^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp|ssh-dss) ")
+        fail_msg: "SSH public key is missing or invalid. Please provide a valid public key."
+        success_msg: "SSH public key format is valid"
+
     - name: Install SSH public key for management user
       ansible.posix.authorized_key:
         user: "{{ ansible_management_user }}"
@@ -104,6 +112,7 @@
         key: "{{ ansible_management_ssh_key }}"
         comment: "Ansible management key"
         exclusive: false
+      when: ansible_management_ssh_key | length > 0
 
     - name: Ensure sudoers.d directory exists
       ansible.builtin.file:
@@ -125,7 +134,19 @@
         create: true
       loop: "{{ bootstrap_sudo_users }}"
 
-    - name: Install common packages for Ansible
+    - name: Detect package manager
+      ansible.builtin.raw: |
+        if command -v apt-get > /dev/null 2>&1; then
+          echo "apt"
+        elif command -v yum > /dev/null 2>&1; then
+          echo "yum"
+        else
+          echo "unknown"
+        fi
+      register: pkg_manager_check
+      changed_when: false
+
+    - name: Install common packages for Ansible (Debian/Ubuntu)
       ansible.builtin.apt:
         name:
           - python3-apt
@@ -134,11 +155,36 @@
           - sudo
         state: present
         update_cache: true
-      when: ansible_os_family == "Debian"
+      when: pkg_manager_check.stdout == "apt"
+
+    - name: Install common packages for Ansible (RHEL/CentOS)
+      ansible.builtin.yum:
+        name:
+          - python3-pip
+          - openssh-server
+          - sudo
+        state: present
+      when: pkg_manager_check.stdout == "yum"
+
+    - name: Detect SSH service name
+      ansible.builtin.command: systemctl list-unit-files --type=service
+      register: systemctl_list
+      changed_when: false
+      failed_when: false
+
+    - name: Set SSH service name fact
+      ansible.builtin.set_fact:
+        ssh_service_name: "{{ 'sshd' if ('sshd.service' in systemctl_list.stdout) else ('ssh' if ('ssh.service' in systemctl_list.stdout) else 'sshd') }}"
+      when: systemctl_list.rc == 0
+
+    - name: Set default SSH service name
+      ansible.builtin.set_fact:
+        ssh_service_name: "sshd"
+      when: systemctl_list.rc != 0 or ssh_service_name is not defined
 
     - name: Ensure SSH service is running
       ansible.builtin.systemd:
-        name: ssh
+        name: "{{ ssh_service_name }}"
         state: started
         enabled: true
 
@@ -154,22 +200,34 @@
         - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
       notify: restart ssh
 
+    - name: Extract SSH key type and fingerprint
+      ansible.builtin.set_fact:
+        ssh_key_type: "{{ ansible_management_ssh_key.split(' ')[0] | default('unknown') }}"
+        ssh_key_fingerprint: "{{ (ansible_management_ssh_key.split(' ')[1] | default(''))[:20] }}..."
+      when: ansible_management_ssh_key | length > 0
+
     - name: Display bootstrap summary
       ansible.builtin.debug:
         msg:
           - "Bootstrap complete for {{ inventory_hostname }}"
           - "Management user: {{ ansible_management_user }}"
-          - "SSH key installed: {{ ansible_management_ssh_key[:50] }}..."
+          - "SSH key type: {{ ssh_key_type | default('N/A') }}"
+          - "SSH key fingerprint: {{ ssh_key_fingerprint | default('N/A') }}"
           - "Passwordless sudo configured for: {{ bootstrap_sudo_users | join(', ') }}"
           - ""
           - "Next steps:"
           - "1. Add this host to inventory/hosts with:"
           - "   {{ inventory_hostname }} ansible_host={{ ansible_host | default(inventory_hostname) }} ansible_user={{ ansible_management_user }}"
+          - ""
+          - "   IMPORTANT: Ensure your SSH private key matches the public key that was installed."
+          - "   If using a non-default key location, specify it in inventory:"
+          - "   {{ inventory_hostname }} ansible_host={{ ansible_host | default(inventory_hostname) }} ansible_user={{ ansible_management_user }} ansible_ssh_private_key_file=~/.ssh/id_ed25519"
+          - ""
           - "2. Test connection: ansible {{ inventory_hostname }} -m ping"
           - "3. Run apply-system-tweaks: ansible-playbook playbooks/apply-system-tweaks.yml --limit {{ inventory_hostname }}"
 
   handlers:
     - name: restart ssh
       ansible.builtin.systemd:
-        name: ssh
+        name: "{{ ssh_service_name.stdout | default('sshd') }}"
         state: restarted

@@ -146,10 +146,18 @@ sed -i.bak "/^$HOSTNAME /d" "$BOOTSTRAP_INVENTORY" 2>/dev/null || true
 # Add new entry
 echo "$INVENTORY_ENTRY" >> "$BOOTSTRAP_INVENTORY"
 
+# Validate SSH public key format
+if ! grep -qE "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp|ssh-dss) " "$SSH_PUBLIC_KEY" 2>/dev/null; then
+    echo -e "${YELLOW}Warning: SSH public key format may be invalid${NC}" >&2
+    echo "Expected format: ssh-ed25519 AAAAC3... or ssh-rsa AAAAB3..."
+fi
+
 # Build ansible-playbook command
+# Read the public key and escape it properly for the command line
+SSH_KEY_CONTENT="$(cat "$SSH_PUBLIC_KEY" | tr -d '\n')"
 PLAYBOOK_CMD="ansible-playbook playbooks/bootstrap-host.yml -i $BOOTSTRAP_INVENTORY --limit $HOSTNAME"
 PLAYBOOK_CMD="$PLAYBOOK_CMD -e bootstrap_ansible_user=$MANAGEMENT_USER"
-PLAYBOOK_CMD="$PLAYBOOK_CMD -e bootstrap_ssh_public_key=\"$(cat "$SSH_PUBLIC_KEY")\""
+PLAYBOOK_CMD="$PLAYBOOK_CMD -e bootstrap_ssh_public_key='$SSH_KEY_CONTENT'"
 
 # Determine authentication method
 if [ -n "$SSH_KEY" ]; then
@@ -176,17 +184,97 @@ if eval "$PLAYBOOK_CMD"; then
     echo ""
     echo -e "${GREEN}✓ Bootstrap completed successfully!${NC}"
     echo ""
+    
+    # Determine the private key file that corresponds to the public key
+    PRIVATE_KEY_FILE="${SSH_PUBLIC_KEY%.pub}"
+    
+    # If using a non-standard path, try to find the corresponding private key
+    if [[ ! -f "$PRIVATE_KEY_FILE" ]]; then
+        # Try common locations
+        if [[ "$SSH_PUBLIC_KEY" == *"id_ed25519.pub" ]]; then
+            PRIVATE_KEY_FILE="$HOME/.ssh/id_ed25519"
+        elif [[ "$SSH_PUBLIC_KEY" == *"id_rsa.pub" ]]; then
+            PRIVATE_KEY_FILE="$HOME/.ssh/id_rsa"
+        fi
+    fi
+    
+    # Check if private key exists
+    if [ ! -f "$PRIVATE_KEY_FILE" ]; then
+        echo -e "${YELLOW}Warning: Private key not found at $PRIVATE_KEY_FILE${NC}"
+        echo "You may need to specify ansible_ssh_private_key_file in inventory"
+        PRIVATE_KEY_FILE=""
+    fi
+    
+    # Build inventory entry
+    INVENTORY_ENTRY="$HOSTNAME ansible_host=${IP_ADDRESS:-$HOSTNAME} ansible_user=$MANAGEMENT_USER"
+    # Only specify private key file if it's not in the default location
+    # (SSH will automatically find ~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.)
+    if [ -n "$PRIVATE_KEY_FILE" ] && [[ "$PRIVATE_KEY_FILE" != "$HOME/.ssh/id_ed25519" ]] && [[ "$PRIVATE_KEY_FILE" != "$HOME/.ssh/id_rsa" ]]; then
+        INVENTORY_ENTRY="$INVENTORY_ENTRY ansible_ssh_private_key_file=$PRIVATE_KEY_FILE"
+    fi
+    
     echo "Next steps:"
     echo "1. Add this host to inventory/hosts:"
-    echo "   $HOSTNAME ansible_host=${IP_ADDRESS:-$HOSTNAME} ansible_user=$MANAGEMENT_USER"
-    echo ""
-    echo "2. Test connection:"
-    echo "   ansible $HOSTNAME -m ping"
-    echo ""
-    echo "3. Apply system tweaks:"
-    echo "   ansible-playbook playbooks/apply-system-tweaks.yml --limit $HOSTNAME"
+    echo "   $INVENTORY_ENTRY"
     echo ""
     
+    # Test if we can automatically add and test
+    read -p "Add to main inventory and test connection now? (Y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        # Add to main inventory
+        MAIN_INVENTORY="inventory/hosts"
+        if [ -f "$MAIN_INVENTORY" ]; then
+            # Remove existing entry if present
+            sed -i.bak "/^$HOSTNAME /d" "$MAIN_INVENTORY" 2>/dev/null || true
+            # Add new entry
+            echo "$INVENTORY_ENTRY" >> "$MAIN_INVENTORY"
+            echo -e "${GREEN}Added to $MAIN_INVENTORY${NC}"
+            
+            # Test connection
+            echo ""
+            echo "Testing connection..."
+            TEST_OUTPUT=$(ansible "$HOSTNAME" -m ping 2>&1)
+            TEST_RC=$?
+            if [ $TEST_RC -eq 0 ]; then
+                echo -e "${GREEN}✓ Connection test successful!${NC}"
+                echo ""
+                echo "You can now manage this host with Ansible."
+            else
+                echo -e "${YELLOW}⚠ Connection test failed.${NC}"
+                echo ""
+                echo "Error output:"
+                echo "$TEST_OUTPUT" | tail -5
+                echo ""
+                echo "Troubleshooting:"
+                if [ -n "$PRIVATE_KEY_FILE" ]; then
+                    echo "1. Test SSH manually: ssh -i $PRIVATE_KEY_FILE $MANAGEMENT_USER@${IP_ADDRESS:-$HOSTNAME}"
+                else
+                    echo "1. Test SSH manually: ssh $MANAGEMENT_USER@${IP_ADDRESS:-$HOSTNAME}"
+                fi
+                echo "2. Check inventory entry matches above"
+                echo "3. Verify the private key matches the public key that was installed"
+                echo "4. Check that the management user exists and has the SSH key in ~/.ssh/authorized_keys"
+                echo ""
+                if [ -n "$PRIVATE_KEY_FILE" ] && [[ "$PRIVATE_KEY_FILE" != "$HOME/.ssh/id_ed25519" ]] && [[ "$PRIVATE_KEY_FILE" != "$HOME/.ssh/id_rsa" ]]; then
+                    echo "You may need to manually specify the SSH key in inventory:"
+                    echo "  $HOSTNAME ansible_host=${IP_ADDRESS:-$HOSTNAME} ansible_user=$MANAGEMENT_USER ansible_ssh_private_key_file=$PRIVATE_KEY_FILE"
+                fi
+            fi
+        else
+            echo -e "${YELLOW}Main inventory file not found. Please add manually:${NC}"
+            echo "   $INVENTORY_ENTRY"
+        fi
+    else
+        echo ""
+        echo "2. Test connection manually:"
+        echo "   ansible $HOSTNAME -m ping"
+        echo ""
+        echo "3. Apply system tweaks:"
+        echo "   ansible-playbook playbooks/apply-system-tweaks.yml --limit $HOSTNAME"
+    fi
+    
+    echo ""
     # Optionally remove from bootstrap inventory
     read -p "Remove from bootstrap inventory? (y/N) " -n 1 -r
     echo

@@ -16,12 +16,15 @@ Imports SSH public keys for specified users.
 
 **Variables:**
 - `system_tweaks_ssh_keys_enabled`: Enable/disable (default: `true`)
-- `system_tweaks_ssh_keys`: List of key configurations:
+- `system_tweaks_ssh_keys`: List of key configurations (ED25519 recommended):
   ```yaml
   system_tweaks_ssh_keys:
     - user: ubuntu
-      key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC..."
+      key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
       comment: "Admin SSH Key"
+    - user: deploy
+      key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+      comment: "Deploy Key"
   ```
 
 ## Adding New Tweaks

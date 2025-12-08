@@ -74,11 +74,24 @@ ansible-playbook playbooks/bootstrap-host.yml \
    [ubuntu_servers]
    server1.example.com ansible_host=192.168.1.100 ansible_user=ansible
    ```
+   
+   **Important**: If your SSH private key is not in the default location (`~/.ssh/id_ed25519`), or if you used a custom key during bootstrap, specify it:
+   ```ini
+   [ubuntu_servers]
+   server1.example.com ansible_host=192.168.1.100 ansible_user=ansible ansible_ssh_private_key_file=~/.ssh/id_ed25519
+   ```
+   
+   The bootstrap script will automatically add the host and test the connection if you answer 'Y' to the prompt.
 
 2. **Test connection**:
    ```bash
    ansible server1.example.com -m ping
    ```
+   
+   If authentication fails:
+   - Verify the private key matches the public key installed during bootstrap
+   - Test SSH manually: `ssh -i ~/.ssh/id_ed25519 ansible@server1.example.com`
+   - Check that the key is loaded in your SSH agent: `ssh-add -l`
 
 3. **Apply system tweaks**:
    ```bash
@@ -105,8 +118,13 @@ The bootstrap playbook automatically installs Python 3. If it fails, ensure:
 
 ### Bootstrap succeeds but can't connect after
 - Verify the host was added to main inventory with correct `ansible_user`
-- Check that the management user's SSH key is correct
-- Test SSH manually: `ssh ansible@hostname`
+- **Most common issue**: The private key doesn't match the public key that was installed
+  - Check which public key was installed during bootstrap (shown in output)
+  - Ensure you're using the corresponding private key
+  - Specify the key explicitly: `ansible_ssh_private_key_file=~/.ssh/id_ed25519` in inventory
+- Test SSH manually: `ssh -i ~/.ssh/id_ed25519 ansible@hostname`
+- Check SSH agent has the key: `ssh-add -l` (if using SSH agent)
+- Verify the key file exists and has correct permissions: `ls -la ~/.ssh/id_ed25519`
 
 ## Advanced Options
 
