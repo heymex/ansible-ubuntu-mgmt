@@ -128,6 +128,14 @@ if [ ! -f "$BOOTSTRAP_INVENTORY" ]; then
     cp inventory/bootstrap-hosts.ini.example "$BOOTSTRAP_INVENTORY"
 fi
 
+# Auto-detect if hostname is an IP address
+if [ -z "$IP_ADDRESS" ]; then
+    # Check if HOSTNAME looks like an IP address
+    if [[ "$HOSTNAME" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        IP_ADDRESS="$HOSTNAME"
+    fi
+fi
+
 # Build inventory entry
 if [ -n "$IP_ADDRESS" ]; then
     INVENTORY_ENTRY="$HOSTNAME ansible_host=$IP_ADDRESS ansible_user=$ANSIBLE_USER"
@@ -141,15 +149,88 @@ fi
 
 # Add host to bootstrap inventory
 echo -e "${GREEN}Adding host to bootstrap inventory...${NC}"
-# Remove existing entry if present
-sed -i.bak "/^$HOSTNAME /d" "$BOOTSTRAP_INVENTORY" 2>/dev/null || true
-# Add new entry
-echo "$INVENTORY_ENTRY" >> "$BOOTSTRAP_INVENTORY"
+
+# Ensure bootstrap_hosts group exists
+if ! grep -q "^\[bootstrap_hosts\]" "$BOOTSTRAP_INVENTORY" 2>/dev/null; then
+    # Add the group if it doesn't exist
+    {
+        echo ""
+        echo "[bootstrap_hosts]"
+    } >> "$BOOTSTRAP_INVENTORY"
+fi
+
+# Remove existing entry if present (anywhere in file, including comments)
+sed -i.bak "/^[[:space:]]*$HOSTNAME[[:space:]]/d" "$BOOTSTRAP_INVENTORY" 2>/dev/null || true
+
+# Create a temporary file for the updated inventory
+TMP_INVENTORY=$(mktemp)
+IN_GROUP=false
+HOST_ADDED=false
+
+# Process the inventory file
+while IFS= read -r line || [ -n "$line" ]; do
+    # Check if we're entering the bootstrap_hosts group
+    if [[ "$line" =~ ^\[bootstrap_hosts\] ]]; then
+        echo "$line" >> "$TMP_INVENTORY"
+        IN_GROUP=true
+        # Add the host entry right after the group header
+        echo "$INVENTORY_ENTRY" >> "$TMP_INVENTORY"
+        HOST_ADDED=true
+    # Check if we're leaving the group (entering another group)
+    elif [[ "$line" =~ ^\[ ]] && [ "$IN_GROUP" = true ]; then
+        IN_GROUP=false
+        echo "$line" >> "$TMP_INVENTORY"
+    else
+        echo "$line" >> "$TMP_INVENTORY"
+    fi
+done < "$BOOTSTRAP_INVENTORY"
+
+# If host wasn't added (group didn't exist or was empty), add it
+if [ "$HOST_ADDED" = false ]; then
+    # Find bootstrap_hosts group and add after it
+    if grep -q "^\[bootstrap_hosts\]" "$TMP_INVENTORY"; then
+        # Use awk to insert after the group header
+        awk -v entry="$INVENTORY_ENTRY" '
+            /^\[bootstrap_hosts\]/ {print; print entry; next}
+            {print}
+        ' "$TMP_INVENTORY" > "${TMP_INVENTORY}.tmp" && mv "${TMP_INVENTORY}.tmp" "$TMP_INVENTORY"
+    else
+        # Add group and host
+        {
+            echo ""
+            echo "[bootstrap_hosts]"
+            echo "$INVENTORY_ENTRY"
+        } >> "$TMP_INVENTORY"
+    fi
+fi
+
+# Replace the original file
+mv "$TMP_INVENTORY" "$BOOTSTRAP_INVENTORY"
+
+# Verify the host was added correctly
+if grep -A 10 "^\[bootstrap_hosts\]" "$BOOTSTRAP_INVENTORY" | grep -q "^$HOSTNAME "; then
+    echo -e "${GREEN}Host added to [bootstrap_hosts] group${NC}"
+else
+    echo -e "${YELLOW}Warning: Host may not have been added correctly to bootstrap_hosts group${NC}"
+    echo "Please check $BOOTSTRAP_INVENTORY manually"
+fi
 
 # Validate SSH public key format
 if ! grep -qE "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp|ssh-dss) " "$SSH_PUBLIC_KEY" 2>/dev/null; then
     echo -e "${YELLOW}Warning: SSH public key format may be invalid${NC}" >&2
     echo "Expected format: ssh-ed25519 AAAAC3... or ssh-rsa AAAAB3..."
+fi
+
+# Verify inventory before running playbook
+echo -e "${GREEN}Verifying inventory...${NC}"
+if ! ansible-inventory -i "$BOOTSTRAP_INVENTORY" --list > /dev/null 2>&1; then
+    echo -e "${YELLOW}Warning: Inventory validation failed, but continuing...${NC}"
+fi
+
+# Show what hosts are in bootstrap_hosts group
+BOOTSTRAP_HOSTS=$(ansible-inventory -i "$BOOTSTRAP_INVENTORY" --list 2>/dev/null | grep -A 20 '"bootstrap_hosts"' | grep -o '"[^"]*"' | tr -d '"' | grep -v "^bootstrap_hosts$" || echo "")
+if [ -n "$BOOTSTRAP_HOSTS" ]; then
+    echo "Hosts in bootstrap_hosts group: $BOOTSTRAP_HOSTS"
 fi
 
 # Build ansible-playbook command
