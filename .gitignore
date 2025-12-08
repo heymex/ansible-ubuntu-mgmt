@@ -240,3 +240,4 @@ inventory/bootstrap-hosts.ini
 
 # baseline script with credentials
 baseline/baseline.yml
+baseline/*venv

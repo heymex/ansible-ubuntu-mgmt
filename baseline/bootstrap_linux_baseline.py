@@ -4,7 +4,6 @@ import os
 import yaml
 import paramiko
 import getpass
-from pathlib import Path
 
 def load_config(path):
     with open(path, "r") as f:
@@ -18,6 +17,8 @@ def get_ssh_client(host_cfg):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
+    password = None
+
     if auth_method == "key":
         key_path = os.path.expanduser(host_cfg.get("ssh_key", "~/.ssh/id_rsa"))
         pkey = paramiko.RSAKey.from_private_key_file(key_path)
@@ -25,24 +26,44 @@ def get_ssh_client(host_cfg):
     elif auth_method == "password":
         password = host_cfg.get("password")
         if password is None:
-            # Prompt interactively if not in config
-            password = getpass.getpass(f"Password for {username}@{hostname}: ")
+            password = getpass.getpass(f"SSH password for {username}@{hostname}: ")
         client.connect(hostname, username=username, password=password, timeout=15)
     else:
         raise ValueError(f"Unknown auth_method {auth_method} for host {hostname}")
 
-    return client
+    # Determine sudo password:
+    #   - if sudo_password provided, use that
+    #   - else reuse SSH password
+    sudo_password = host_cfg.get("sudo_password", password)
 
-def run(client, cmd, sudo=False):
-    if sudo and not cmd.startswith("sudo "):
-        cmd = "sudo " + cmd
+    return client, sudo_password
+
+def run(client, cmd, sudo=False, sudo_password=None):
+    """
+    Run a command. If sudo=True:
+      - if sudo_password is provided: use 'sudo -S -p ""' and feed password
+      - otherwise, assume passwordless sudo or root and just prefix sudo
+    """
+    if sudo:
+        if sudo_password:
+            cmd = f"sudo -S -p '' {cmd}"
+        else:
+            if not cmd.startswith("sudo "):
+                cmd = "sudo " + cmd
+
     stdin, stdout, stderr = client.exec_command(cmd)
+
+    if sudo and sudo_password:
+        # Feed sudo the password on stdin
+        stdin.write(sudo_password + "\n")
+        stdin.flush()
+
     exit_status = stdout.channel.recv_exit_status()
     out = stdout.read().decode()
     err = stderr.read().decode()
     return exit_status, out, err
 
-def ensure_user(client, user):
+def ensure_user(client, sudo_password, user):
     name = user["name"]
     shell = user.get("shell", "/bin/bash")
     home = user.get("home", f"/home/{name}")
@@ -50,8 +71,7 @@ def ensure_user(client, user):
     groups = user.get("groups", [])
     create_if_missing = user.get("create_if_missing", True)
 
-    # Check if user exists
-    status, _, _ = run(client, f"id -u {name}", sudo=True)
+    status, _, _ = run(client, f"id -u {name}", sudo=True, sudo_password=sudo_password)
     if status != 0:
         if not create_if_missing:
             print(f"  - User {name} missing, but create_if_missing is false. Skipping create.")
@@ -63,19 +83,21 @@ def ensure_user(client, user):
         if groups:
             cmd += f" -G {','.join(groups)}"
         cmd += f" {name}"
-        status, out, err = run(client, cmd, sudo=True)
+        status, out, err = run(client, cmd, sudo=True, sudo_password=sudo_password)
         if status != 0:
             print(f"    ! Failed to create user {name}: {err.strip()}")
         else:
             print(f"    + User {name} created")
     else:
         print(f"  - User {name} already exists")
-        # Ensure home and shell (best effort)
-        run(client, f"usermod -d {home} -s {shell} {name}", sudo=True)
+        # Best-effort normalize shell/home/groups
+        run(client, f"usermod -d {home} -s {shell} {name}",
+            sudo=True, sudo_password=sudo_password)
         if groups:
-            run(client, f"usermod -a -G {','.join(groups)} {name}", sudo=True)
+            run(client, f"usermod -a -G {','.join(groups)} {name}",
+                sudo=True, sudo_password=sudo_password)
 
-def ensure_authorized_keys(client, user):
+def ensure_authorized_keys(client, sudo_password, user):
     name = user["name"]
     ak = user.get("authorized_keys")
     if not ak:
@@ -92,30 +114,32 @@ def ensure_authorized_keys(client, user):
 
     print(f"  - Ensuring authorized_keys for {name}")
 
-    # Create .ssh directory and set perms
-    run(client, f"mkdir -p {ssh_dir}", sudo=True)
-    run(client, f"chown {name}:{name} {ssh_dir}", sudo=True)
-    run(client, f"chmod 700 {ssh_dir}", sudo=True)
+    run(client, f"mkdir -p {ssh_dir}", sudo=True, sudo_password=sudo_password)
+    run(client, f"chown {name}:{name} {ssh_dir}", sudo=True, sudo_password=sudo_password)
+    run(client, f"chmod 700 {ssh_dir}", sudo=True, sudo_password=sudo_password)
 
     key_block = "\n".join(keys) + "\n"
+
     if replace:
         cmd = f"bash -c 'cat > {auth_file}'"
-        stdin, stdout, stderr = client.exec_command(f"sudo {cmd}")
+        stdin, stdout, stderr = client.exec_command(f"sudo -S -p '' {cmd}")
+        if sudo_password:
+            stdin.write(sudo_password + "\n")
+            stdin.flush()
         stdin.write(key_block)
         stdin.channel.shutdown_write()
         stdout.channel.recv_exit_status()
     else:
-        # Append keys if not already present (simple approach)
         for k in keys:
             escaped_k = k.replace("'", "'\"'\"'")
             check_cmd = f"grep -qx '{escaped_k}' {auth_file} || echo '{escaped_k}' >> {auth_file}"
-            run(client, f"bash -c \"{check_cmd}\"", sudo=True)
+            run(client, f"bash -c \"{check_cmd}\"", sudo=True, sudo_password=sudo_password)
 
-    run(client, f"chown {name}:{name} {auth_file}", sudo=True)
-    run(client, f"chmod 600 {auth_file}", sudo=True)
+    run(client, f"chown {name}:{name} {auth_file}", sudo=True, sudo_password=sudo_password)
+    run(client, f"chmod 600 {auth_file}", sudo=True, sudo_password=sudo_password)
     print(f"    + authorized_keys updated")
 
-def ensure_sudo(client, user):
+def ensure_sudo(client, sudo_password, user):
     name = user["name"]
     sudo_cfg = user.get("sudo")
     if not sudo_cfg:
@@ -123,34 +147,31 @@ def ensure_sudo(client, user):
 
     nopasswd = sudo_cfg.get("nopasswd", False)
     if not nopasswd:
-        # Nothing to do beyond group membership
         return
 
     print(f"  - Ensuring passwordless sudo for {name}")
     sudo_file = f"/etc/sudoers.d/90-{name}-bootstrap"
     line = f"{name} ALL=(ALL) NOPASSWD:ALL\n"
 
-    # Write to sudoers.d
     cmd = f"bash -c 'echo \"{line.rstrip()}\" > {sudo_file}'"
-    status, out, err = run(client, cmd, sudo=True)
+    status, out, err = run(client, cmd, sudo=True, sudo_password=sudo_password)
     if status != 0:
         print(f"    ! Failed to write sudoers file: {err.strip()}")
         return
 
-    run(client, f"chmod 440 {sudo_file}", sudo=True)
+    run(client, f"chmod 440 {sudo_file}", sudo=True, sudo_password=sudo_password)
 
-    # Validate with visudo
-    status, out, err = run(client, f"visudo -cf {sudo_file}", sudo=True)
+    status, out, err = run(client, f"visudo -cf {sudo_file}", sudo=True, sudo_password=sudo_password)
     if status != 0:
         print(f"    ! visudo validation failed, removing {sudo_file}: {err.strip()}")
-        run(client, f"rm -f {sudo_file}", sudo=True)
+        run(client, f"rm -f {sudo_file}", sudo=True, sudo_password=sudo_password)
     else:
         print(f"    + Sudoers entry valid and in place")
 
 def process_host(host_cfg, baseline_users):
     print(f"=== {host_cfg['name']} ({host_cfg['hostname']}) ===")
     try:
-        client = get_ssh_client(host_cfg)
+        client, sudo_password = get_ssh_client(host_cfg)
     except Exception as e:
         print(f"!! Failed to connect: {e}")
         return
@@ -158,32 +179,5 @@ def process_host(host_cfg, baseline_users):
     try:
         for user in baseline_users:
             print(f"- Handling user {user['name']}")
-            ensure_user(client, user)
-            ensure_authorized_keys(client, user)
-            ensure_sudo(client, user)
-    finally:
-        client.close()
-    print("")
-
-def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} baseline.yml")
-        sys.exit(1)
-
-    cfg = load_config(sys.argv[1])
-    hosts = cfg.get("hosts", [])
-    users = cfg.get("baseline_users", [])
-
-    if not hosts:
-        print("No hosts defined in config")
-        sys.exit(1)
-
-    if not users:
-        print("No baseline_users defined in config")
-        sys.exit(1)
-
-    for host_cfg in hosts:
-        process_host(host_cfg, users)
-
-if __name__ == "__main__":
-    main()
+            ensure_user(client, sudo_password, user)
+            ensure_authorized_keys(client, sudo_password, user)
