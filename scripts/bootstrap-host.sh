@@ -139,9 +139,6 @@ if ! grep -qE "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp|ssh-dss) " "$SSH_PUBLIC_KE
     fi
 fi
 
-# Read the public key content
-SSH_KEY_CONTENT="$(cat "$SSH_PUBLIC_KEY" | tr -d '\n')"
-
 echo ""
 echo -e "${GREEN}Bootstrapping host: $HOSTNAME${NC}"
 echo -e "  Target: $TARGET_HOST"
@@ -164,7 +161,7 @@ else
     SSH_NEEDS_PASSWORD=true
 fi
 
-# Test initial connection (without -t for this test to avoid password prompt)
+# Test initial connection
 echo ""
 echo "Testing initial connection..."
 TEST_SSH_CMD="ssh"
@@ -179,145 +176,23 @@ else
     exit 1
 fi
 
-# Bootstrap script to run on remote host
-# Uses environment variables instead of arguments for better compatibility
-BOOTSTRAP_SCRIPT=$(cat << 'BOOTSTRAP_EOF'
-#!/bin/bash
-set -euo pipefail
-
-# Get values from environment variables (set by wrapper)
-MANAGEMENT_USER="${MANAGEMENT_USER:-ansible}"
-SSH_KEY_CONTENT="${SSH_KEY_CONTENT:-}"
-INITIAL_USER="${INITIAL_USER:-ubuntu}"
-
-# Create management user if it doesn't exist
-if ! id "$MANAGEMENT_USER" &>/dev/null; then
-    echo "Creating user: $MANAGEMENT_USER"
-    useradd -m -s /bin/bash "$MANAGEMENT_USER"
-    
-    # Add to sudo group
-    if command -v usermod > /dev/null 2>&1; then
-        usermod -aG sudo "$MANAGEMENT_USER" 2>/dev/null || true
-    fi
-else
-    echo "User $MANAGEMENT_USER already exists"
-fi
-
-# Create .ssh directory
-mkdir -p "/home/$MANAGEMENT_USER/.ssh"
-chmod 700 "/home/$MANAGEMENT_USER/.ssh"
-chown "$MANAGEMENT_USER:$MANAGEMENT_USER" "/home/$MANAGEMENT_USER/.ssh"
-
-# Add SSH key to authorized_keys
-AUTH_KEYS="/home/$MANAGEMENT_USER/.ssh/authorized_keys"
-if ! grep -qF "$SSH_KEY_CONTENT" "$AUTH_KEYS" 2>/dev/null; then
-    echo "$SSH_KEY_CONTENT" >> "$AUTH_KEYS"
-    echo "Added SSH key to authorized_keys"
-else
-    echo "SSH key already in authorized_keys"
-fi
-chmod 600 "$AUTH_KEYS"
-chown "$MANAGEMENT_USER:$MANAGEMENT_USER" "$AUTH_KEYS"
-
-# Configure passwordless sudo
-SUDOERS_FILE="/etc/sudoers.d/ansible-$MANAGEMENT_USER"
-if [ ! -f "$SUDOERS_FILE" ]; then
-    echo "$MANAGEMENT_USER ALL=(ALL) NOPASSWD: ALL" > "$SUDOERS_FILE"
-    chmod 440 "$SUDOERS_FILE"
-    # Validate sudoers file
-    if command -v visudo > /dev/null 2>&1; then
-        visudo -cf "$SUDOERS_FILE" || {
-            echo "Warning: Sudoers file validation failed, removing"
-            rm -f "$SUDOERS_FILE"
-            exit 1
-        }
-    fi
-    echo "Configured passwordless sudo for $MANAGEMENT_USER"
-else
-    echo "Passwordless sudo already configured"
-fi
-
-# Also ensure initial user has passwordless sudo (if different)
-if [ "$INITIAL_USER" != "$MANAGEMENT_USER" ] && [ "$INITIAL_USER" != "root" ]; then
-    INITIAL_SUDOERS="/etc/sudoers.d/ansible-$INITIAL_USER"
-    if [ ! -f "$INITIAL_SUDOERS" ]; then
-        echo "$INITIAL_USER ALL=(ALL) NOPASSWD: ALL" > "$INITIAL_SUDOERS"
-        chmod 440 "$INITIAL_SUDOERS"
-        if command -v visudo > /dev/null 2>&1; then
-            visudo -cf "$INITIAL_SUDOERS" || rm -f "$INITIAL_SUDOERS"
-        fi
-    fi
-fi
-
-echo "Bootstrap complete for $MANAGEMENT_USER"
-BOOTSTRAP_EOF
-)
-
-# Execute bootstrap script on remote host
+# Step 1: Create the management user
 echo ""
-echo "Running bootstrap on remote host..."
-echo "This will:"
-echo "  1. Create user: $MANAGEMENT_USER"
-echo "  2. Install SSH public key"
-echo "  3. Configure passwordless sudo"
-if [ "$SSH_NEEDS_PASSWORD" = true ]; then
-    echo ""
-    echo "You will be prompted for the sudo password for $INITIAL_USER"
-fi
-
-# Build the full bootstrap command with arguments embedded
-# We need to pass arguments as environment variables or embed them in the script
-# Using environment variables is safer for special characters
-BOOTSTRAP_WITH_ARGS=$(cat <<BOOTSTRAP_WRAPPER
-#!/bin/bash
-export MANAGEMENT_USER="$MANAGEMENT_USER"
-export SSH_KEY_CONTENT="$SSH_KEY_CONTENT"
-export INITIAL_USER="$INITIAL_USER"
-$BOOTSTRAP_SCRIPT
-BOOTSTRAP_WRAPPER
-)
-
-# Execute with proper pseudo-terminal handling
-if [ "$SSH_NEEDS_PASSWORD" = true ]; then
-    # Use -tt to force pseudo-terminal allocation (needed for sudo password prompts)
-    # Use here-doc instead of here-string to allow pseudo-terminal
-    if $SSH_CMD -tt "$INITIAL_USER@$TARGET_HOST" "sudo bash" <<BOOTSTRAP_EOF
-$BOOTSTRAP_WITH_ARGS
-BOOTSTRAP_EOF
-    then
-        BOOTSTRAP_SUCCESS=true
-    else
-        BOOTSTRAP_SUCCESS=false
-    fi
+echo "Step 1: Creating user '$MANAGEMENT_USER'..."
+if $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "id $MANAGEMENT_USER" &>/dev/null; then
+    echo "  User $MANAGEMENT_USER already exists"
 else
-    # For key auth, regular here-string works fine
-    if $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo bash" <<BOOTSTRAP_EOF
-$BOOTSTRAP_WITH_ARGS
-BOOTSTRAP_EOF
-    then
-        BOOTSTRAP_SUCCESS=true
-    else
-        BOOTSTRAP_SUCCESS=false
-    fi
+    echo "  Creating user..."
+    $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo useradd -m -s /bin/bash $MANAGEMENT_USER && sudo usermod -aG sudo $MANAGEMENT_USER" || {
+        echo -e "${RED}Failed to create user${NC}"
+        exit 1
+    }
+    echo -e "  ${GREEN}✓ User created${NC}"
 fi
 
-if [ "$BOOTSTRAP_SUCCESS" = true ]; then
-    echo ""
-    echo -e "${GREEN}✓ Bootstrap completed successfully!${NC}"
-else
-    echo ""
-    echo -e "${RED}✗ Bootstrap failed${NC}"
-    echo ""
-    echo "Common issues:"
-    echo "  - Incorrect sudo password"
-    echo "  - User $INITIAL_USER doesn't have sudo access"
-    echo "  - Network connectivity issues"
-    exit 1
-fi
-
-# Test connection as management user
+# Step 2: Install SSH key using ssh-copy-id
 echo ""
-echo "Testing connection as $MANAGEMENT_USER..."
+echo "Step 2: Installing SSH public key..."
 PRIVATE_KEY_FILE="${SSH_PUBLIC_KEY%.pub}"
 if [ ! -f "$PRIVATE_KEY_FILE" ]; then
     if [[ "$SSH_PUBLIC_KEY" == *"id_ed25519.pub" ]]; then
@@ -327,6 +202,39 @@ if [ ! -f "$PRIVATE_KEY_FILE" ]; then
     fi
 fi
 
+# Build ssh-copy-id command
+SSH_COPY_ID_CMD="ssh-copy-id"
+if [ -n "$SSH_KEY" ]; then
+    SSH_COPY_ID_CMD="$SSH_COPY_ID_CMD -i $SSH_KEY"
+elif [ -f "$PRIVATE_KEY_FILE" ]; then
+    SSH_COPY_ID_CMD="$SSH_COPY_ID_CMD -i $PRIVATE_KEY_FILE"
+fi
+
+# Use ssh-copy-id to install the key
+if $SSH_COPY_ID_CMD -f "$MANAGEMENT_USER@$TARGET_HOST" 2>&1 | grep -v "WARNING:"; then
+    echo -e "  ${GREEN}✓ SSH key installed${NC}"
+else
+    # If ssh-copy-id fails, try manual method
+    echo "  ssh-copy-id failed, trying manual method..."
+    $SSH_CMD "$INITIAL_USER@$TARGET_HOST" "sudo mkdir -p /home/$MANAGEMENT_USER/.ssh && sudo chmod 700 /home/$MANAGEMENT_USER/.ssh && echo '$(cat "$SSH_PUBLIC_KEY")' | sudo tee -a /home/$MANAGEMENT_USER/.ssh/authorized_keys > /dev/null && sudo chmod 600 /home/$MANAGEMENT_USER/.ssh/authorized_keys && sudo chown -R $MANAGEMENT_USER:$MANAGEMENT_USER /home/$MANAGEMENT_USER/.ssh" || {
+        echo -e "  ${RED}Failed to install SSH key${NC}"
+        exit 1
+    }
+    echo -e "  ${GREEN}✓ SSH key installed${NC}"
+fi
+
+# Step 3: Configure passwordless sudo
+echo ""
+echo "Step 3: Configuring passwordless sudo..."
+$SSH_CMD "$INITIAL_USER@$TARGET_HOST" "echo '$MANAGEMENT_USER ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/ansible-$MANAGEMENT_USER > /dev/null && sudo chmod 440 /etc/sudoers.d/ansible-$MANAGEMENT_USER && sudo visudo -cf /etc/sudoers.d/ansible-$MANAGEMENT_USER" || {
+    echo -e "  ${RED}Failed to configure sudo${NC}"
+    exit 1
+}
+echo -e "  ${GREEN}✓ Passwordless sudo configured${NC}"
+
+# Test connection as management user
+echo ""
+echo "Testing connection as $MANAGEMENT_USER..."
 if [ -f "$PRIVATE_KEY_FILE" ]; then
     TEST_SSH_CMD="ssh -i $PRIVATE_KEY_FILE"
 else
