@@ -1,0 +1,47 @@
+# baseline.yml
+
+# How to connect to each host *for bootstrapping*
+hosts:
+  - name: web01
+    hostname: web01.example.com
+    ssh_user: root           # or an existing sudo-capable user
+    auth_method: key         # "key" or "password"
+    ssh_key: /root/.ssh/id_rsa
+    # password: "secret"     # only if auth_method: password
+
+  - name: db01
+    hostname: db01.example.com
+    ssh_user: admin
+    auth_method: password
+    password: "SuperSecret123"
+
+# Baseline users to ensure are present on every host
+baseline_users:
+  - name: ansible
+    uid: 2001            # optional
+    shell: /bin/bash
+    home: /home/ansible  # optional, default /home/<name>
+    groups: ["sudo"]     # for Debian/Ubuntu; use ["wheel"] on RHEL-ish, or configure per host later
+    create_if_missing: true
+
+    # Replace the authorized_keys file for this user with these keys
+    authorized_keys:
+      replace: true      # if false, will append instead of overwrite
+      keys:
+        - "ssh-ed25519 AAAA... ansible@laptop"
+        - "ssh-rsa AAAA... other-key"
+
+    # Passwordless sudo (writes a sudoers.d drop-in)
+    sudo:
+      nopasswd: true     # if true: ansible ALL=(ALL) NOPASSWD:ALL
+
+  - name: deploy
+    shell: /bin/bash
+    groups: ["sudo"]
+    create_if_missing: true
+    authorized_keys:
+      replace: false     # append keys
+      keys:
+        - "ssh-ed25519 AAAA... deploy@ci"
+    sudo:
+      nopasswd: false    # sudo still allowed via group, but not NOPASSWD

@@ -237,3 +237,6 @@ credentials/
 
 # Bootstrap inventory (may contain passwords or sensitive info)
 inventory/bootstrap-hosts.ini
+
+# baseline script with credentials
+baseline/baseline.yml
