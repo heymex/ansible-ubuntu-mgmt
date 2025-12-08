@@ -35,7 +35,7 @@ IP_ADDRESS=""
 ANSIBLE_USER="${ANSIBLE_USER:-ubuntu}"
 SSH_KEY="${SSH_KEY:-}"
 MANAGEMENT_USER="${MANAGEMENT_USER:-ansible}"
-SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-$HOME/.ssh/id_rsa.pub}"
+SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-$HOME/.ssh/id_ed25519.pub}"
 BOOTSTRAP_INVENTORY="inventory/bootstrap-hosts.ini"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -54,7 +54,7 @@ Options:
   -i, --ip              Treat hostname as IP address (use hostname as ansible_host)
   -k, --ssh-key PATH    Path to SSH private key for initial connection
   -m, --mgmt-user USER  User to create for Ansible management (default: ansible)
-  -p, --pub-key PATH    Path to SSH public key to install (default: ~/.ssh/id_rsa.pub)
+  -p, --pub-key PATH    Path to SSH public key to install (default: ~/.ssh/id_ed25519.pub)
   -h, --help            Show this help message
 
 Examples:
@@ -115,7 +115,7 @@ fi
 
 if [ ! -f "$SSH_PUBLIC_KEY" ]; then
     echo -e "${YELLOW}Warning: SSH public key not found at $SSH_PUBLIC_KEY${NC}" >&2
-    echo "Please specify the correct path with --pub-key or ensure ~/.ssh/id_rsa.pub exists"
+    echo "Please specify the correct path with --pub-key or ensure ~/.ssh/id_ed25519.pub exists"
     exit 1
 fi
 

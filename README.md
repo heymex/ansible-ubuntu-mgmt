@@ -291,10 +291,10 @@ Import SSH public keys for users:
 # In group_vars/all.yml
 system_tweaks_ssh_keys:
   - user: ubuntu
-    key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC..."
+    key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
     comment: "Admin SSH Key"
   - user: deploy
-    key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+    key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
     comment: "Deploy Key"
 ```
 

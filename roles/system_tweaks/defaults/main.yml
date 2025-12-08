@@ -14,12 +14,12 @@ system_tweaks_passwordless_sudo_users:
 # SSH keys configuration
 system_tweaks_ssh_keys_enabled: true
 system_tweaks_ssh_keys: []
-  # Example format:
+  # Example format (ED25519 recommended for security):
   # - user: ubuntu
-  #   key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC..."
+  #   key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
   #   comment: "Admin SSH Key"
   # - user: deploy
-  #   key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+  #   key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
   #   comment: "Deploy Key"
 
 # Additional tweaks

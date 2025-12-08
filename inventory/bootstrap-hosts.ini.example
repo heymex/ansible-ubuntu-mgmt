@@ -35,5 +35,5 @@ ansible_python_interpreter=/usr/bin/python3
 
 # Bootstrap-specific variables
 # bootstrap_ansible_user: ansible  # User to create for Ansible management (default: ansible)
-# bootstrap_ssh_public_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"  # SSH key to install
+# bootstrap_ssh_public_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"  # ED25519 SSH key to install (recommended)
 # bootstrap_disable_password_auth: false  # Set to true to disable password auth after bootstrap
