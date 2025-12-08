@@ -315,25 +315,42 @@ if eval "$PLAYBOOK_CMD"; then
             # Test connection
             echo ""
             echo "Testing connection..."
-            TEST_OUTPUT=$(ansible "$HOSTNAME" -m ping 2>&1)
-            TEST_RC=$?
+            # Test with output visible and capture result
+            # Use a temporary file to capture output while still showing it
+            TEST_LOG=$(mktemp)
+            if ansible "$HOSTNAME" -m ping 2>&1 | tee "$TEST_LOG"; then
+                TEST_RC=0
+            else
+                TEST_RC=$?
+            fi
+            TEST_OUTPUT=$(cat "$TEST_LOG" 2>/dev/null || echo "")
+            rm -f "$TEST_LOG"
+            
             if [ $TEST_RC -eq 0 ]; then
+                echo ""
                 echo -e "${GREEN}✓ Connection test successful!${NC}"
                 echo ""
                 echo "You can now manage this host with Ansible."
             else
-                echo -e "${YELLOW}⚠ Connection test failed.${NC}"
                 echo ""
-                echo "Error output:"
-                echo "$TEST_OUTPUT" | tail -5
+                echo -e "${YELLOW}⚠ Connection test failed.${NC}"
+                if [ -n "$TEST_OUTPUT" ]; then
+                    echo ""
+                    echo "Error details:"
+                    echo "$TEST_OUTPUT" | grep -i "error\|failed\|denied\|unreachable" | head -5
+                fi
                 echo ""
                 echo "Troubleshooting:"
-                if [ -n "$PRIVATE_KEY_FILE" ]; then
+                if [ -n "$PRIVATE_KEY_FILE" ] && [ -f "$PRIVATE_KEY_FILE" ]; then
                     echo "1. Test SSH manually: ssh -i $PRIVATE_KEY_FILE $MANAGEMENT_USER@${IP_ADDRESS:-$HOSTNAME}"
                 else
                     echo "1. Test SSH manually: ssh $MANAGEMENT_USER@${IP_ADDRESS:-$HOSTNAME}"
+                    if [ -n "$PRIVATE_KEY_FILE" ]; then
+                        echo "   (Note: Private key not found at $PRIVATE_KEY_FILE)"
+                    fi
                 fi
-                echo "2. Check inventory entry matches above"
+                echo "2. Check inventory entry in inventory/hosts matches:"
+                echo "   $INVENTORY_ENTRY"
                 echo "3. Verify the private key matches the public key that was installed"
                 echo "4. Check that the management user exists and has the SSH key in ~/.ssh/authorized_keys"
                 echo ""
