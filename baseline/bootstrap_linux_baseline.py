@@ -9,6 +9,42 @@ def load_config(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
+def load_private_key(key_path):
+    """
+    Load a private key file, trying different key types.
+    Supports RSA, Ed25519, ECDSA, and DSS keys.
+    """
+    key_path = os.path.expanduser(key_path)
+    
+    if not os.path.exists(key_path):
+        raise FileNotFoundError(f"SSH key file not found: {key_path}")
+    
+    # Try different key types in order of commonality
+    key_types = [
+        ("Ed25519", paramiko.Ed25519Key),
+        ("RSA", paramiko.RSAKey),
+        ("ECDSA", paramiko.ECDSAKey),
+        ("DSS", paramiko.DSSKey),
+    ]
+    
+    last_error = None
+    for key_type_name, key_class in key_types:
+        try:
+            return key_class.from_private_key_file(key_path)
+        except (paramiko.ssh_exception.SSHException, ValueError) as e:
+            # Continue to next key type
+            last_error = e
+            continue
+        except Exception as e:
+            # For other exceptions (like file not found), re-raise immediately
+            raise
+    
+    # If all key types failed, raise an informative error
+    error_msg = f"Could not load private key from {key_path}. Tried Ed25519, RSA, ECDSA, and DSS."
+    if last_error:
+        error_msg += f" Last error: {last_error}"
+    raise ValueError(error_msg)
+
 def get_ssh_client(host_cfg):
     hostname = host_cfg["hostname"]
     username = host_cfg["ssh_user"]
@@ -20,8 +56,8 @@ def get_ssh_client(host_cfg):
     password = None
 
     if auth_method == "key":
-        key_path = os.path.expanduser(host_cfg.get("ssh_key", "~/.ssh/id_rsa"))
-        pkey = paramiko.RSAKey.from_private_key_file(key_path)
+        key_path = host_cfg.get("ssh_key", "~/.ssh/id_rsa")
+        pkey = load_private_key(key_path)
         client.connect(hostname, username=username, pkey=pkey, timeout=15)
     elif auth_method == "password":
         password = host_cfg.get("password")
