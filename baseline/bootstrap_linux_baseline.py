@@ -181,3 +181,33 @@ def process_host(host_cfg, baseline_users):
             print(f"- Handling user {user['name']}")
             ensure_user(client, sudo_password, user)
             ensure_authorized_keys(client, sudo_password, user)
+            ensure_sudo(client, sudo_password, user)
+    except Exception as e:
+        print(f"!! Error processing users: {e}")
+    finally:
+        client.close()
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: bootstrap_linux_baseline.py <config.yml>")
+        sys.exit(1)
+
+    config_path = sys.argv[1]
+    config = load_config(config_path)
+
+    hosts = config.get("hosts", [])
+    baseline_users = config.get("baseline_users", [])
+
+    if not hosts:
+        print("No hosts configured")
+        sys.exit(1)
+
+    if not baseline_users:
+        print("No baseline_users configured")
+        sys.exit(1)
+
+    for host_cfg in hosts:
+        process_host(host_cfg, baseline_users)
+
+if __name__ == "__main__":
+    main()
