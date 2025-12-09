@@ -6,7 +6,8 @@
 
 # System tweaks configuration
 system_tweaks_passwordless_sudo_users:
-  - ubuntu
+  - derek
+  - ansible
 
 # SSH keys - add your ED25519 public keys here (ED25519 recommended for security)
 # system_tweaks_ssh_keys:
